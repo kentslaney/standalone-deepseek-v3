@@ -113,12 +113,12 @@ class Trainer(Transformer):
 
 model = Trainer(ModelArgs(
         max_batch_size=batch_size, vocab_size=len(tokenizer),
-        max_seq_len=max_seq_length, dim=1024, inter_dim=4096, moe_inter_dim=512,
-        n_layers=16))
+        max_seq_len=max_seq_length, dim=512, inter_dim=2048, moe_inter_dim=256,
+        n_layers=16, n_heads=8))
+model.to(device_type)
+
 optimizer = model.configure_optimizers(
         weight_decay, learning_rate, (beta1, beta2), device_type)
-
-model.to(device_type)
 
 for epoch in range(epochs):
     print(f"epoch {epoch} / {epochs}")

@@ -536,8 +536,12 @@ class MLA(nn.Module):
             k = torch.cat(
                     [k_nope, k_pe.expand(-1, -1, self.n_local_heads, -1)],
                     dim=-1)
-            self.k_cache[:bsz, start_pos:end_pos] = k
-            self.v_cache[:bsz, start_pos:end_pos] = v
+            if self.training:
+                self.k_cache = k
+                self.v_cache = v
+            else:
+                self.k_cache[:bsz, start_pos:end_pos] = k
+                self.v_cache[:bsz, start_pos:end_pos] = v
             scores = torch.einsum(
                     "bshd,bthd->bsht", q,
                     self.k_cache[:bsz, :end_pos]) * self.softmax_scale
@@ -548,8 +552,12 @@ class MLA(nn.Module):
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
             q_nope = torch.einsum(
                     "bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
-            self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
-            self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
+            if self.training:
+                self.kv_cache = self.kv_norm(kv)
+                self.pe_cache = k_pe.squeeze(2)
+            else:
+                self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
+                self.pe_cache[:bsz, start_pos:end_pos] = k_pe.squeeze(2)
             scores = (
                     torch.einsum(
                         "bshc,btc->bsht", q_nope,

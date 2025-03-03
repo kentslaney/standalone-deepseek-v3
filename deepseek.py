@@ -850,8 +850,9 @@ class Transformer(nn.Module):
         global world_size, rank
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         rank = dist.get_rank() if dist.is_initialized() else 0
-        Linear.dtype = torch.float8_e4m3fn if args.dtype == "fp8" else \
-                torch.bfloat16
+        Linear.dtype = torch.get_default_dtype()
+        # Linear.dtype = torch.float8_e4m3fn if args.dtype == "fp8" else \
+        #         torch.bfloat16
         super().__init__()
         self.max_seq_len = args.max_seq_len
         self.embed = ParallelEmbedding(args.vocab_size, args.dim)

@@ -1,18 +1,22 @@
-import torch, tqdm, inspect
+import torch, tqdm, inspect, pathlib
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import torch.nn as nn
 from torch.nn import functional as F
+from datetime import datetime
+
+from config import configs
+config = configs["19M"]
 
 # https://github.com/huggingface/transformers/blob/92c5ca9/examples/pytorch/language-modeling/run_mlm.py
 tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 
 preprocessing_num_workers = 32
-max_seq_length = 256
-assert max_seq_length < tokenizer.model_max_length
+max_seq_len = config.pop("max_seq_len", 256)
+assert max_seq_len < tokenizer.model_max_length
 text_column_name = "text"
 overwrite_cache = False
-batch_size = 8
+max_batch_size = config.pop("max_batch_size", 8)
 
 def tokenize_function(examples):
     # Remove empty lines
@@ -24,7 +28,7 @@ def tokenize_function(examples):
         examples[text_column_name],
         padding="max_length",
         truncation=True,
-        max_length=max_seq_length + 1,
+        max_length=max_seq_len + 1,
     )
 
 dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
@@ -41,7 +45,22 @@ dataset = dataset.map(
 dataset.set_format(
         type="torch", columns=["input_ids", "token_type_ids", "attention_mask"])
 dataset = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=True)
+        dataset, batch_size=max_batch_size, shuffle=True)
+
+# TODO: figure out the right way to do this with split=["train", "validation"]
+valid = load_dataset("wikitext", "wikitext-103-raw-v1", split="validation")
+valid = valid.map(
+    tokenize_function,
+    batched=True,
+    num_proc=preprocessing_num_workers,
+    remove_columns=[text_column_name],
+    load_from_cache_file=not overwrite_cache,
+    desc="Running tokenizer on dataset line_by_line",
+)
+
+valid.set_format(
+        type="torch", columns=["input_ids", "token_type_ids", "attention_mask"])
+valid = torch.utils.data.DataLoader(valid, batch_size=max_batch_size)
 
 from deepseek import *
 
@@ -50,7 +69,7 @@ beta1 = 0.9
 beta2 = 0.95
 learning_rate = 6e-4
 device_type = "cuda"
-epochs = 1000
+epochs = 4
 
 class Trainer(Transformer):
     def __init__(self, *a, **kw):
@@ -62,7 +81,7 @@ class Trainer(Transformer):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, ParallelEmbedding):
+        elif isinstance(module, (ParallelEmbedding, Categorical)):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, tokens, targets=None, mask=None):
@@ -111,18 +130,46 @@ class Trainer(Transformer):
 
         return optimizer
 
+@torch.no_grad()
+def validation_loss():
+    total = 0
+    for x in valid:
+        logits, loss = model(
+                x["input_ids"][:, :-1].to(device_type),
+                x["input_ids"][:, 1:].to(device_type),
+                x["attention_mask"][:, 1:].to(device_type))
+        total += loss
+    return total / len(valid)
+
 model = Trainer(ModelArgs(
-        max_batch_size=batch_size, vocab_size=len(tokenizer),
-        max_seq_len=max_seq_length, dim=512, inter_dim=2048, moe_inter_dim=256,
-        n_layers=16, n_heads=8))
+        max_batch_size=max_batch_size, vocab_size=len(tokenizer),
+        max_seq_len=max_seq_len, **config))
 model.to(device_type)
 
 optimizer = model.configure_optimizers(
         weight_decay, learning_rate, (beta1, beta2), device_type)
 
+def ckpt(epoch):
+    checkpoint = {
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'epoch': epoch,
+        'config': config,
+    }
+    torch.save(checkpoint, out_dir / f"ckpt-{epoch}.pt")
+
+loss_ema = 0
+loss_ema_alpha = 0.1
+out_dir = pathlib.Path(__file__).parents[0] / "jobs"
+out_dir /= datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+out_dir.mkdir(parents=True, exist_ok=True)
+
+ckpt(0)
+print("validation_loss:", "{:.3f}".format(validation_loss()))
 for epoch in range(epochs):
     print(f"epoch {epoch} / {epochs}")
-    for x in tqdm.tqdm(dataset):
+    pbar = tqdm.tqdm(dataset)
+    for x in pbar:
         logits, loss = model(
                 x["input_ids"][:, :-1].to(device_type),
                 x["input_ids"][:, 1:].to(device_type),
@@ -131,3 +178,9 @@ for epoch in range(epochs):
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+
+        loss_ema = loss_ema_alpha * loss.item() + \
+                (1 - loss_ema_alpha) * loss_ema
+        pbar.set_description("loss - {:.3f}".format(loss_ema))
+    ckpt(epoch + 1)
+    print("validation_loss:", "{:.3f}".format(validation_loss()))

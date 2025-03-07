@@ -1,6 +1,22 @@
+from collections import OrderedDict
+
 # https://github.com/deepseek-ai/DeepSeek-V3/tree/f09f5fa/inference/configs
-configs = [
-    {
+configs = OrderedDict([
+    ("19M", {
+        "dim": 128,
+        "inter_dim": 256,
+        "moe_inter_dim": 64,
+        "n_layers": 8,
+        "n_heads": 6,
+        "n_routed_experts": 16,
+        "max_batch_size": 64,
+    }), ("500M", {
+        "dim": 512,
+        "inter_dim": 2048,
+        "moe_inter_dim": 256,
+        "n_layers": 16,
+        "n_heads": 8,
+    }), ("16B", {
         "vocab_size": 102400,
         "dim": 2048,
         "inter_dim": 10944,
@@ -17,9 +33,8 @@ configs = [
         "qk_nope_head_dim": 128,
         "qk_rope_head_dim": 64,
         "v_head_dim": 128,
-        "mscale": 0.707
-    },
-    {
+        "mscale": 0.707,
+    }), ("236B", {
         "vocab_size": 102400,
         "dim": 5120,
         "inter_dim": 12288,
@@ -37,9 +52,8 @@ configs = [
         "kv_lora_rank": 512,
         "qk_nope_head_dim": 128,
         "qk_rope_head_dim": 64,
-        "v_head_dim": 128
-    },
-    {
+        "v_head_dim": 128,
+    }), ("671B", {
         "vocab_size": 129280,
         "dim": 7168,
         "inter_dim": 18432,
@@ -59,13 +73,14 @@ configs = [
         "qk_nope_head_dim": 128,
         "qk_rope_head_dim": 64,
         "v_head_dim": 128,
-        "dtype": "fp8"
-    },
-]
+        "dtype": "fp8",
+    })
+])
 
-transposed = {
-        k: [i.get(k, None) for i in configs]
-        for k in set(sum((list(i.keys()) for i in configs), []))}
+if __name__ == "__main__":
+    transposed = {
+            k: [i.get(k, None) for i in configs.values()]
+            for k in set(sum((list(i.keys()) for i in configs.values()), []))}
 
-from pprint import pprint
-pprint(transposed)
+    from pprint import pprint
+    pprint(transposed)

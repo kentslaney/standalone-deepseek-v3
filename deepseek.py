@@ -14,8 +14,10 @@ from kernel import act_quant, weight_dequant, fp8_gemm
 world_size = 1
 rank = 0
 block_size = 128
+gating_bias_cutoff = 7168
 gemm_impl: Literal["bf16", "fp8"] = "bf16"
 attn_impl: Literal["naive", "absorb"] = "absorb"
+moe_impl: Literal["mixture", "distribution"] = "distribution"
 
 @dataclass
 class ModelArgs:
@@ -643,9 +645,8 @@ class Gate(nn.Module):
         self.score_func = args.score_func
         self.route_scale = args.route_scale
         self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
-        # 7168 is a parameter from the largest model config
         self.bias = nn.Parameter(torch.empty(args.n_routed_experts)) \
-                if self.dim == 7168 else None
+                if self.dim >= gating_bias_cutoff else None
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -683,6 +684,50 @@ class Gate(nn.Module):
             weights /= weights.sum(dim=-1, keepdim=True)
         weights *= self.route_scale
         return weights.type_as(x), indices
+
+
+class Categorical(nn.Module):
+    """
+    Gating mechanism for routing inputs in a mixture-of-experts (MoE) model.
+
+    Attributes:
+        dim (int): Dimensionality of input features.
+        score_func (str): Scoring function ('softmax' or 'sigmoid').
+        route_scale (float): Scaling factor for routing weights.
+        weight (torch.nn.Parameter): Learnable weights for the gate.
+    """
+    def __init__(self, args: ModelArgs):
+        """
+        Initializes the Gate module.
+
+        Args:
+            args (ModelArgs): Model arguments containing gating parameters.
+        """
+        super().__init__()
+        self.dim = args.dim
+        self.score_func = args.score_func
+        self.route_scale = args.route_scale
+        self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass for the gating mechanism.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+                Routing weights and selected expert indices.
+        """
+        scores = linear(x, self.weight)
+        if self.score_func == "softmax":
+            scores = scores.softmax(dim=-1, dtype=torch.float32)
+        else:
+            scores = scores.sigmoid() / scores.sum(dim=-1, keepdim=True)
+        indices = torch.distributions.categorical.Categorical(scores)\
+                .sample()[..., None]
+        return (scores * self.route_scale).type_as(x), indices
 
 
 class Expert(nn.Module):
@@ -751,7 +796,7 @@ class MoE(nn.Module):
         self.n_activated_experts = args.n_activated_experts
         self.experts_start_idx = rank * self.n_local_experts
         self.experts_end_idx = self.experts_start_idx + self.n_local_experts
-        self.gate = Gate(args)
+        self.gate = Gate(args) if moe_impl == "mixture" else Categorical(args)
         self.experts = nn.ModuleList([
                 Expert(args.dim, args.moe_inter_dim)
                 if self.experts_start_idx <= i < self.experts_end_idx else None

@@ -17,7 +17,7 @@ block_size = 128
 gating_bias_cutoff = 7168
 gemm_impl: Literal["bf16", "fp8"] = "bf16"
 attn_impl: Literal["naive", "absorb"] = "absorb"
-moe_impl: Literal["mixture", "distribution"] = "distribution"
+moe_impl: Literal["mixture", "distribution"] = "mixture"
 
 @dataclass
 class ModelArgs:

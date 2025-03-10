@@ -4,74 +4,51 @@ from transformers import AutoTokenizer
 import torch.nn as nn
 from torch.nn import functional as F
 from datetime import datetime
-
-from config import configs
-config = configs["19M"]
+from deepseek import *
 
 # https://github.com/huggingface/transformers/blob/92c5ca9/examples/pytorch/language-modeling/run_mlm.py
 tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 
-preprocessing_num_workers = 32
-max_seq_len = config.pop("max_seq_len", 256)
-assert max_seq_len < tokenizer.model_max_length
-text_column_name = "text"
-overwrite_cache = False
-max_batch_size = config.pop("max_batch_size", 8)
+def tokenize_wrapper(max_seq_len):
+    assert max_seq_len < tokenizer.model_max_length
 
-def tokenize_function(examples):
-    # Remove empty lines
-    examples[text_column_name] = [
-        line for line in examples[text_column_name]
-        if len(line) > 0 and not line.isspace()
-    ]
-    return tokenizer(
-        examples[text_column_name],
-        padding="max_length",
-        truncation=True,
-        max_length=max_seq_len + 1,
+    def tokenize_function(examples):
+        # Remove empty lines
+        examples["text"] = [
+            line for line in examples["text"]
+            if len(line) > 0 and not line.isspace()
+        ]
+        return tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=max_seq_len + 1,
+        )
+    return tokenize_function
+
+def preprocess(split, max_seq_len, batch_size, shuffle, num_proc=32):
+    dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split=split)
+    dataset = dataset.map(
+        tokenize_wrapper(max_seq_len),
+        batched=True,
+        num_proc=num_proc,
+        remove_columns=["text"],
+        load_from_cache_file=True,
+        desc="Running tokenizer on dataset line_by_line",
     )
 
-dataset = load_dataset("wikitext", "wikitext-103-raw-v1", split="train")
-dataset = dataset.map(
-    tokenize_function,
-    batched=True,
-    num_proc=preprocessing_num_workers,
-    remove_columns=[text_column_name],
-    load_from_cache_file=not overwrite_cache,
-    desc="Running tokenizer on dataset line_by_line",
-)
-# EOF run_mlm.py
-
-dataset.set_format(
-        type="torch", columns=["input_ids", "token_type_ids", "attention_mask"])
-dataset = torch.utils.data.DataLoader(
-        dataset, batch_size=max_batch_size, shuffle=True)
-
-# TODO: figure out the right way to do this with split=["train", "validation"]
-valid = load_dataset("wikitext", "wikitext-103-raw-v1", split="validation")
-valid = valid.map(
-    tokenize_function,
-    batched=True,
-    num_proc=preprocessing_num_workers,
-    remove_columns=[text_column_name],
-    load_from_cache_file=not overwrite_cache,
-    desc="Running tokenizer on dataset line_by_line",
-)
-
-valid.set_format(
-        type="torch", columns=["input_ids", "token_type_ids", "attention_mask"])
-valid = torch.utils.data.DataLoader(valid, batch_size=max_batch_size)
-
-from deepseek import *
-
-weight_decay = 1e-1
-beta1 = 0.9
-beta2 = 0.95
-learning_rate = 6e-4
-device_type = "cuda"
-epochs = 4
+    dataset.set_format(
+            type="torch",
+            columns=["input_ids", "token_type_ids", "attention_mask"])
+    return torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=shuffle)
 
 class Trainer(Transformer):
+    weight_decay = 1e-1
+    beta1 = 0.9
+    beta2 = 0.95
+    learning_rate = 6e-4
+
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.apply(self._init_weights)
@@ -97,7 +74,14 @@ class Trainer(Transformer):
         return logits, loss
 
     def configure_optimizers(
-            self, weight_decay, learning_rate, betas, device_type):
+            self, device_type, weight_decay=None, learning_rate=None,
+            betas=None):
+        weight_decay = self.weight_decay if weight_decay is None else \
+                weight_decay
+        learning_rate = self.weight_decay if learning_rate is None else \
+                learning_rate
+        betas = (self.beta1, self.beta2) if betas is None else betas
+
         # start with all of the candidate parameters
         param_dict = {pn: p for pn, p in self.named_parameters()}
         # filter out those that do not require grad
@@ -130,57 +114,88 @@ class Trainer(Transformer):
 
         return optimizer
 
-@torch.no_grad()
-def validation_loss():
-    total = 0
-    for x in valid:
-        logits, loss = model(
-                x["input_ids"][:, :-1].to(device_type),
-                x["input_ids"][:, 1:].to(device_type),
-                x["attention_mask"][:, 1:].to(device_type))
-        total += loss
-    return total / len(valid)
+def main(config, epochs=4, resume=None, device_type="cuda"):
+    max_seq_len = config.pop("max_seq_len", 256)
+    max_batch_size = config.pop("max_batch_size", 8)
 
-model = Trainer(ModelArgs(
-        max_batch_size=max_batch_size, vocab_size=len(tokenizer),
-        max_seq_len=max_seq_len, **config))
-model.to(device_type)
+    dataset = preprocess("train", max_seq_len, max_batch_size, True)
+    valid = preprocess("validation", max_seq_len, max_batch_size, False)
 
-optimizer = model.configure_optimizers(
-        weight_decay, learning_rate, (beta1, beta2), device_type)
+    model = Trainer(ModelArgs(
+            max_batch_size=max_batch_size, vocab_size=len(tokenizer),
+            max_seq_len=max_seq_len, **config))
+    if resume is not None:
+        model.load_state_dict(resume["model"])
+    model.to(device_type)
 
-def ckpt(epoch):
-    checkpoint = {
-        'model': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'epoch': epoch,
-        'config': config,
-    }
-    torch.save(checkpoint, out_dir / f"ckpt-{epoch}.pt")
+    optimizer = model.configure_optimizers(device_type)
+    if resume is not None:
+        optimizer.load_state_dict(resume["optimizer"])
 
-loss_ema = 0
-loss_ema_alpha = 0.1
-out_dir = pathlib.Path(__file__).parents[0] / "jobs"
-out_dir /= datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-out_dir.mkdir(parents=True, exist_ok=True)
+    @torch.no_grad()
+    def validation_loss():
+        total = 0
+        for x in valid:
+            logits, loss = model(
+                    x["input_ids"][:, :-1].to(device_type),
+                    x["input_ids"][:, 1:].to(device_type),
+                    x["attention_mask"][:, 1:].to(device_type))
+            total += loss
+        return total / len(valid)
 
-ckpt(0)
-print("validation_loss:", "{:.3f}".format(validation_loss()))
-for epoch in range(epochs):
-    print(f"epoch {epoch} / {epochs}")
-    pbar = tqdm.tqdm(dataset)
-    for x in pbar:
-        logits, loss = model(
-                x["input_ids"][:, :-1].to(device_type),
-                x["input_ids"][:, 1:].to(device_type),
-                x["attention_mask"][:, 1:].to(device_type))
+    def ckpt(epoch):
+        checkpoint = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch': epoch,
+            'config': config,
+        }
+        torch.save(checkpoint, out_dir / f"ckpt-{epoch}.pt")
 
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+    loss_ema = 0
+    loss_ema_alpha = 0.1
+    out_dir = pathlib.Path(__file__).parents[0] / "jobs"
+    out_dir /= datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        loss_ema = loss_ema_alpha * loss.item() + \
-                (1 - loss_ema_alpha) * loss_ema
-        pbar.set_description("loss - {:.3f}".format(loss_ema))
-    ckpt(epoch + 1)
+    first_epoch = 0 if resume is None else resume['epoch']
+    if first_epoch != epochs:
+        ckpt(first_epoch)
     print("validation_loss:", "{:.3f}".format(validation_loss()))
+    for epoch in range(first_epoch, epochs):
+        print(f"epoch {epoch} / {epochs}")
+        pbar = tqdm.tqdm(dataset)
+        for x in pbar:
+            logits, loss = model(
+                    x["input_ids"][:, :-1].to(device_type),
+                    x["input_ids"][:, 1:].to(device_type),
+                    x["attention_mask"][:, 1:].to(device_type))
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            loss_ema = loss_ema_alpha * loss.item() + \
+                    (1 - loss_ema_alpha) * loss_ema
+            pbar.set_description("loss - {:.3f}".format(loss_ema))
+        ckpt(epoch + 1)
+        print("validation_loss:", "{:.3f}".format(validation_loss()))
+
+if __name__ == "__main__":
+    from config import configs
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--preset", default=None)
+    group.add_argument("--ckpt", default=None)
+    parser.add_argument("--epochs", type=int, default=4)
+    args = parser.parse_args()
+
+    if args.ckpt is not None:
+        ckpt = torch.load(args.ckpt)
+        main(ckpt["config"], args.epochs, ckpt)
+    else:
+        config = configs.values()[0] if args.preset is None else \
+                configs[args.preset]
+        main(config, args.epochs)

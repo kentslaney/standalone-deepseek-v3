@@ -12,6 +12,7 @@ tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 def tokenize_wrapper(max_seq_len):
     assert max_seq_len < tokenizer.model_max_length
 
+    # TODO: this may cut off paragraphs that should be chunked
     def tokenize_function(examples):
         # Remove empty lines
         examples["text"] = [
@@ -196,6 +197,6 @@ if __name__ == "__main__":
         ckpt = torch.load(args.ckpt)
         main(ckpt["config"], args.epochs, ckpt)
     else:
-        config = configs.values()[0] if args.preset is None else \
+        config = next(iter(configs.values())) if args.preset is None else \
                 configs[args.preset]
         main(config, args.epochs)

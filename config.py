@@ -2,7 +2,24 @@ from collections import OrderedDict
 
 # https://github.com/deepseek-ai/DeepSeek-V3/tree/f09f5fa/inference/configs
 configs = OrderedDict([
-    ("19M", {
+    ("6M", {
+        "dim": 64,
+        "inter_dim": 128,
+        "moe_inter_dim": 32,
+        "n_layers": 4,
+        "n_heads": 3,
+        "n_routed_experts": 8,
+        "max_batch_size": 128,
+    }), ("6M_moe_impl", {
+        "dim": 64,
+        "inter_dim": 128,
+        "moe_inter_dim": 32,
+        "n_layers": 4,
+        "n_heads": 3,
+        "n_routed_experts": 8,
+        "max_batch_size": 128,
+        "moe_impl": "distribution",
+    }), ("19M", {
         "dim": 128,
         "inter_dim": 256,
         "moe_inter_dim": 64,
@@ -10,6 +27,15 @@ configs = OrderedDict([
         "n_heads": 6,
         "n_routed_experts": 16,
         "max_batch_size": 64,
+    }), ("19M_moe_impl", {
+        "dim": 128,
+        "inter_dim": 256,
+        "moe_inter_dim": 64,
+        "n_layers": 8,
+        "n_heads": 6,
+        "n_routed_experts": 16,
+        "max_batch_size": 64,
+        "moe_impl": "distribution",
     }), ("500M", {
         "dim": 512,
         "inter_dim": 2048,
@@ -78,9 +104,10 @@ configs = OrderedDict([
 ])
 
 if __name__ == "__main__":
+    show = ("6M", "19M", "500M", "16B", "236B", "671B")
     transposed = {
-            k: [i.get(k, None) for i in configs.values()]
-            for k in set(sum((list(i.keys()) for i in configs.values()), []))}
+            k: [configs[i].get(k, None) for i in show]
+            for k in set(sum((list(configs[i].keys()) for i in show), []))}
 
     from pprint import pprint
     pprint(transposed)

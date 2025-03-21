@@ -17,7 +17,6 @@ block_size = 128
 gating_bias_cutoff = 7168
 gemm_impl: Literal["bf16", "fp8"] = "bf16"
 attn_impl: Literal["naive", "absorb"] = "absorb"
-moe_impl: Literal["mixture", "distribution"] = "mixture"
 
 @dataclass
 class ModelArgs:
@@ -88,6 +87,8 @@ class ModelArgs:
     beta_fast: int = 32
     beta_slow: int = 1
     mscale: float = 1.
+    # experiments
+    moe_impl: Literal["mixture", "distribution"] = "mixture"
 
 
 class ParallelEmbedding(nn.Module):
@@ -796,7 +797,8 @@ class MoE(nn.Module):
         self.n_activated_experts = args.n_activated_experts
         self.experts_start_idx = rank * self.n_local_experts
         self.experts_end_idx = self.experts_start_idx + self.n_local_experts
-        self.gate = Gate(args) if moe_impl == "mixture" else Categorical(args)
+        self.gate = Gate(args) if args.moe_impl == "mixture" else \
+                Categorical(args)
         self.experts = nn.ModuleList([
                 Expert(args.dim, args.moe_inter_dim)
                 if self.experts_start_idx <= i < self.experts_end_idx else None

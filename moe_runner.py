@@ -243,7 +243,7 @@ def plotter(args):
     import matplotlib.pyplot as plt
     if args.losses is latest_flag:
         args.losses = [latest_job() / loss_filename]
-    for f in args.losses:
+    for n, f in enumerate(args.losses):
         with open(f, "r") as fp:
             history = list(map(json.loads, fp))
         history = {k: [i[k] for i in history] for k in history[0].keys()}
@@ -264,8 +264,12 @@ def plotter(args):
             smooth[:cutoff] /= norm
             smooth[cutoff:] /= norm[-1]
             history["train"] = smooth
-        plt.semilogy(history["train"])
-        plt.semilogy(history["steps"], history["val"])
+        plt.semilogy(history["train"], label=f"series {n} train")
+        plt.semilogy(history["steps"], history["val"], label=f"series {n} val")
+    plt.xlabel("step (scaled)")
+    plt.ylabel("loss")
+    plt.title("wikitext")
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":

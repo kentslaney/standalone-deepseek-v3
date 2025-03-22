@@ -163,7 +163,7 @@ def run(config, epochs=4, resume=None, history=None, device_type="cuda"):
     loss_acc_steps = 100
     # incorrect initialization
     loss_ema = 0
-    loss_ema_alpha = 0.1
+    loss_ema_alpha = 0.9
     # tied to `is_date`
     out_dir = jobs_dir / datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 
@@ -196,8 +196,8 @@ def run(config, epochs=4, resume=None, history=None, device_type="cuda"):
 
             loss_item = loss.item()
             loss_acc += loss_item
-            loss_ema = loss_ema_alpha * loss_item + \
-                    (1 - loss_ema_alpha) * loss_ema
+            loss_ema = (1 - loss_ema_alpha) * loss_item + \
+                    loss_ema_alpha * loss_ema
             pbar.set_description("loss - {:.3e}".format(loss_ema))
             if (step + 1) % loss_acc_steps == 0:
                 losses.append(loss_acc / loss_acc_steps)

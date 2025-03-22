@@ -65,17 +65,16 @@ class Trainer(Transformer):
     def forward(self, tokens, targets=None, mask=None):
         logits = super().forward(tokens)
         if targets is None:
-            loss = None
+            return logits
+        if mask is not None:
+            logits = logits * mask[..., None]
+        loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1), ignore_index=-1)
+        if mask is not None:
+            loss /= torch.sum(mask)
         else:
-            if mask is not None:
-                logits = logits * mask[..., None]
-            loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)),
-                    targets.view(-1), ignore_index=-1)
-            if mask is not None:
-                loss /= torch.sum(mask)
-            else:
-                loss /= tokens.shape[0]
+            loss /= tokens.shape[0]
         return logits, loss
 
     def configure_optimizers(

@@ -1,4 +1,4 @@
-import torch, tqdm, inspect, pathlib
+import torch, tqdm, inspect, pathlib, json, shutil
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import torch.nn as nn
@@ -72,6 +72,7 @@ class Trainer(Transformer):
             loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     targets.view(-1), ignore_index=-1)
+            loss /= torch.sum(mask)
         return logits, loss
 
     def configure_optimizers(
@@ -115,7 +116,10 @@ class Trainer(Transformer):
 
         return optimizer
 
-def main(config, epochs=4, resume=None, device_type="cuda"):
+jobs_dir = pathlib.Path(__file__).parents[0] / "jobs"
+loss_filename = "loss.json"
+
+def main(config, epochs=4, resume=None, history=None, device_type="cuda"):
     max_seq_len = config.pop("max_seq_len", 256)
     max_batch_size = config.pop("max_batch_size", 8)
 
@@ -141,7 +145,7 @@ def main(config, epochs=4, resume=None, device_type="cuda"):
                     x["input_ids"][:, :-1].to(device_type),
                     x["input_ids"][:, 1:].to(device_type),
                     x["attention_mask"][:, 1:].to(device_type))
-            total += loss
+            total += loss.item()
         return total / len(valid)
 
     def ckpt(epoch):
@@ -153,20 +157,30 @@ def main(config, epochs=4, resume=None, device_type="cuda"):
         }
         torch.save(checkpoint, out_dir / f"ckpt-{epoch}.pt")
 
+    loss_acc = 0
+    loss_acc_steps = 100
     loss_ema = 0
     loss_ema_alpha = 0.1
-    out_dir = pathlib.Path(__file__).parents[0] / "jobs"
-    out_dir /= datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    # tied to `is_date`
+    out_dir = jobs_dir / datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    print(f"writing to {out_dir}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    if history is not None:
+        shutil.copy(history, out_dir / loss_filename)
 
     first_epoch = 0 if resume is None else resume['epoch']
     if first_epoch != epochs:
         ckpt(first_epoch)
-    print("validation_loss:", "{:.3f}".format(validation_loss()))
+    val = validation_loss()
+    print("validation_loss:", "{:.3e}".format(val))
+    if not (out_dir / loss_filename).is_file():
+        with open(out_dir / loss_filename, "a+") as fp:
+            fp.write(json.dumps({"val": val}))
     for epoch in range(first_epoch, epochs):
+        losses = []
         print(f"epoch {epoch} / {epochs}")
         pbar = tqdm.tqdm(dataset)
-        for x in pbar:
+        for step, x in enumerate(pbar):
             logits, loss = model(
                     x["input_ids"][:, :-1].to(device_type),
                     x["input_ids"][:, 1:].to(device_type),
@@ -176,27 +190,56 @@ def main(config, epochs=4, resume=None, device_type="cuda"):
             loss.backward()
             optimizer.step()
 
-            loss_ema = loss_ema_alpha * loss.item() + \
+            loss_item = loss.item()
+            loss_acc += loss_item
+            loss_ema = loss_ema_alpha * loss_item + \
                     (1 - loss_ema_alpha) * loss_ema
-            pbar.set_description("loss - {:.3f}".format(loss_ema))
+            pbar.set_description("loss - {:.3e}".format(loss_ema))
+            if (step + 1) % loss_acc_steps == 0:
+                losses.append(loss_acc / loss_acc_steps)
+                loss_acc = 0
         ckpt(epoch + 1)
-        print("validation_loss:", "{:.3f}".format(validation_loss()))
+        val = validation_loss()
+        with open(out_dir / loss_filename, "a") as fp:
+            fp.write(json.dumps({"train": losses, "val": val}))
+        print("validation_loss:", "{:.3e}".format(val))
+
+is_digit = lambda x: ord('0') <= ord(x) <= ord('9')
+
+def is_date(x):
+    x = x.name.split("_")
+    return len(x) == 6 and \
+            all(len(i) == j for i, j in zip(x, (4, 2, 2, 2, 2, 2))) and \
+            all(is_digit(j) for i in x for j in i)
+
+def is_ckpt(x):
+    x = x.name
+    return x.startswith("ckpt-") and x.endswith(".pt") and len(x) > 8 and \
+            all(is_digit(i) for i in x[5:-3])
 
 if __name__ == "__main__":
     from config import configs
     import argparse
 
+    latest_flag = object()
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--preset", default=None)
-    group.add_argument("--ckpt", default=None)
-    parser.add_argument("--epochs", type=int, default=4)
+    group.add_argument("--ckpt", default=None, nargs='?', const=latest_flag)
+    parser.add_argument("--epochs", type=int, default=1000)
     args = parser.parse_args()
 
     if args.ckpt is not None:
+        if args.ckpt is latest_flag:
+            basename = lambda x: x.name
+            args.ckpt = max(filter(is_date, jobs_dir.iterdir()), key=basename)
+            args.ckpt = max(filter(is_ckpt, args.ckpt.iterdir()), key=basename)
+            print(f"resuming from {args.ckpt}")
         ckpt = torch.load(args.ckpt)
-        main(ckpt["config"], args.epochs, ckpt)
+        losses = pathlib.Path(args.ckpt).parents[0] / loss_filename
+        losses = losses if losses.is_file() else None
+        main(ckpt["config"], epochs=args.epochs, resume=ckpt, history=losses)
     else:
         config = next(iter(configs.values())) if args.preset is None else \
                 configs[args.preset]
-        main(config, args.epochs)
+        main(config, epochs=args.epochs)

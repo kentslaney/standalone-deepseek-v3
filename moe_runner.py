@@ -1,4 +1,4 @@
-import torch, tqdm, inspect, pathlib, json, shutil
+import torch, tqdm, inspect, pathlib, json, shutil, os
 from datasets import load_dataset
 from transformers import AutoTokenizer
 import torch.nn as nn
@@ -121,9 +121,22 @@ class Trainer(Transformer):
 jobs_dir = pathlib.Path(__file__).parents[0] / "jobs"
 loss_filename = "loss.json"
 
-def run(config, epochs=4, resume=None, history=None, device_type="cuda"):
+def run(args, config, resume=None, history=None, device_type="cuda"):
     max_seq_len = config.pop("max_seq_len", 256)
     max_batch_size = config.pop("max_batch_size", 8)
+    epochs = args.epochs
+
+    opt = ["learning_rate", "weight_decay", "betas"]
+    opt = {k: getattr(args, k) for k in opt}
+    for k, v in opt.items():
+        arg = config.pop(k, None)
+        if v is None:
+            opt[k] = arg
+
+    if not args.refresh:
+        from huggingface_hub import scan_cache_dir
+        if any(i.repo_id == "wikitext" for i in scan_cache_dir().repos):
+            os.environ["HF_DATASETS_OFFLINE"] = "1"
 
     dataset = preprocess("train", max_seq_len, max_batch_size, True)
     valid = preprocess("validation", max_seq_len, max_batch_size, False)
@@ -135,7 +148,7 @@ def run(config, epochs=4, resume=None, history=None, device_type="cuda"):
         model.load_state_dict(resume["model"])
     model.to(device_type)
 
-    optimizer = model.configure_optimizers(device_type)
+    optimizer = model.configure_optimizers(device_type, **opt)
     if resume is not None:
         optimizer.load_state_dict(resume["optimizer"])
 
@@ -233,11 +246,11 @@ def main(args):
         ckpt = torch.load(args.ckpt)
         losses = pathlib.Path(args.ckpt).parents[0] / loss_filename
         losses = losses if losses.is_file() else None
-        run(ckpt["config"], epochs=args.epochs, resume=ckpt, history=losses)
+        run(args, ckpt["config"], resume=ckpt, history=losses)
     else:
         config = next(iter(configs.values())) if args.preset is None else \
                 configs[args.preset]
-        run(config, epochs=args.epochs)
+        run(args, config)
 
 def plotter(args):
     import matplotlib.pyplot as plt
@@ -282,6 +295,10 @@ if __name__ == "__main__":
     group.add_argument("--preset", default=None)
     group.add_argument("--ckpt", default=None, nargs='?', const=latest_flag)
     parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--betas", type=float, nargs=2, default=None)
+    parser.add_argument("--refresh", action="store_true")
     parser.set_defaults(caller=main)
 
     subparsers = parser.add_subparsers()

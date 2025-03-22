@@ -72,7 +72,10 @@ class Trainer(Transformer):
             loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     targets.view(-1), ignore_index=-1)
-            loss /= torch.sum(mask)
+            if mask is not None:
+                loss /= torch.sum(mask)
+            else:
+                loss /= tokens.shape[0]
         return logits, loss
 
     def configure_optimizers(
@@ -119,7 +122,7 @@ class Trainer(Transformer):
 jobs_dir = pathlib.Path(__file__).parents[0] / "jobs"
 loss_filename = "loss.json"
 
-def main(config, epochs=4, resume=None, history=None, device_type="cuda"):
+def run(config, epochs=4, resume=None, history=None, device_type="cuda"):
     max_seq_len = config.pop("max_seq_len", 256)
     max_batch_size = config.pop("max_batch_size", 8)
 
@@ -155,27 +158,29 @@ def main(config, epochs=4, resume=None, history=None, device_type="cuda"):
             'epoch': epoch,
             'config': config,
         }
-        torch.save(checkpoint, out_dir / f"ckpt-{epoch}.pt")
+        torch.save(checkpoint, out_dir / f"ckpt-{epoch:04}.pt")
 
     loss_acc = 0
     loss_acc_steps = 100
+    # incorrect initialization
     loss_ema = 0
     loss_ema_alpha = 0.1
     # tied to `is_date`
     out_dir = jobs_dir / datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    print(f"writing to {out_dir}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    if history is not None:
-        shutil.copy(history, out_dir / loss_filename)
 
     first_epoch = 0 if resume is None else resume['epoch']
-    if first_epoch != epochs:
+    writing = first_epoch < epochs
+    if writing:
+        print(f"writing to {out_dir}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if history is not None:
+            shutil.copy(history, out_dir / loss_filename)
         ckpt(first_epoch)
     val = validation_loss()
     print("validation_loss:", "{:.3e}".format(val))
-    if not (out_dir / loss_filename).is_file():
+    if writing and not (out_dir / loss_filename).is_file():
         with open(out_dir / loss_filename, "a+") as fp:
-            fp.write(json.dumps({"val": val}))
+            fp.write(json.dumps({"train": [], "val": val}) + "\n")
     for epoch in range(first_epoch, epochs):
         losses = []
         print(f"epoch {epoch} / {epochs}")
@@ -201,10 +206,13 @@ def main(config, epochs=4, resume=None, history=None, device_type="cuda"):
         ckpt(epoch + 1)
         val = validation_loss()
         with open(out_dir / loss_filename, "a") as fp:
-            fp.write(json.dumps({"train": losses, "val": val}))
+            fp.write(json.dumps({"train": losses, "val": val}) + "\n")
         print("validation_loss:", "{:.3e}".format(val))
 
+latest_flag = object()
+latest_job = lambda: max(filter(is_date, jobs_dir.iterdir()), key=basename)
 is_digit = lambda x: ord('0') <= ord(x) <= ord('9')
+basename = lambda x: x.name
 
 def is_date(x):
     x = x.name.split("_")
@@ -217,29 +225,68 @@ def is_ckpt(x):
     return x.startswith("ckpt-") and x.endswith(".pt") and len(x) > 8 and \
             all(is_digit(i) for i in x[5:-3])
 
-if __name__ == "__main__":
-    from config import configs
-    import argparse
-
-    latest_flag = object()
-    parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--preset", default=None)
-    group.add_argument("--ckpt", default=None, nargs='?', const=latest_flag)
-    parser.add_argument("--epochs", type=int, default=1000)
-    args = parser.parse_args()
-
+def main(args):
     if args.ckpt is not None:
         if args.ckpt is latest_flag:
-            basename = lambda x: x.name
-            args.ckpt = max(filter(is_date, jobs_dir.iterdir()), key=basename)
+            args.ckpt = latest_job()
             args.ckpt = max(filter(is_ckpt, args.ckpt.iterdir()), key=basename)
             print(f"resuming from {args.ckpt}")
         ckpt = torch.load(args.ckpt)
         losses = pathlib.Path(args.ckpt).parents[0] / loss_filename
         losses = losses if losses.is_file() else None
-        main(ckpt["config"], epochs=args.epochs, resume=ckpt, history=losses)
+        run(ckpt["config"], epochs=args.epochs, resume=ckpt, history=losses)
     else:
         config = next(iter(configs.values())) if args.preset is None else \
                 configs[args.preset]
-        main(config, epochs=args.epochs)
+        run(config, epochs=args.epochs)
+
+def plotter(args):
+    import matplotlib.pyplot as plt
+    if args.losses is latest_flag:
+        args.losses = [latest_job() / loss_filename]
+    for f in args.losses:
+        with open(f, "r") as fp:
+            history = list(map(json.loads, fp))
+        history = {k: [i[k] for i in history] for k in history[0].keys()}
+        history["steps"] = torch.asarray(list(map(len, history["train"])))
+        history["steps"] = torch.cumsum(history["steps"], 0).tolist()
+        history["train"] = sum(history["train"], [])
+        if args.ema != 0:
+            assert 0 < args.ema < 1
+            acc = torch.asarray(0.01)
+            cutoff = torch.maximum(torch.asarray(10), 1 + torch.ceil(
+                    torch.log(acc) / torch.log(torch.asarray(args.ema))).int())
+            weights = args.ema ** torch.flip(torch.arange(cutoff), (0,))
+            smooth = F.conv1d(
+                    torch.asarray(history["train"])[None, None, :],
+                    weights[None, None, :],
+                    padding=cutoff.item() - 1)[0, 0, :-cutoff + 1]
+            norm = torch.cumsum(torch.flip(weights, (0,)), 0)
+            smooth[:cutoff] /= norm
+            smooth[cutoff:] /= norm[-1]
+            history["train"] = smooth
+        plt.semilogy(history["train"])
+        plt.semilogy(history["steps"], history["val"])
+    plt.show()
+
+if __name__ == "__main__":
+    from config import configs
+    import argparse
+
+    parser = argparse.ArgumentParser()
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--preset", default=None)
+    group.add_argument("--ckpt", default=None, nargs='?', const=latest_flag)
+    parser.add_argument("--epochs", type=int, default=1000)
+    parser.set_defaults(caller=main)
+
+    subparsers = parser.add_subparsers()
+
+    plot = subparsers.add_parser("plot")
+    plot.add_argument("losses", nargs="*", default=latest_flag)
+    plot.add_argument("--ema", default=0., type=float)
+    plot.set_defaults(caller=plotter)
+
+    args = parser.parse_args()
+    args.caller(args)

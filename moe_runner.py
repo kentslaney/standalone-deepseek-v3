@@ -12,7 +12,6 @@ tokenizer = AutoTokenizer.from_pretrained("bert-base-cased")
 def tokenize_wrapper(max_seq_len):
     assert max_seq_len < tokenizer.model_max_length
 
-    # TODO: this may cut off paragraphs that should be chunked
     def tokenize_function(examples):
         # Remove empty lines
         examples["text"] = [
@@ -222,9 +221,9 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
         print("validation_loss:", "{:.3e}".format(val))
 
 latest_flag = object()
+basename = lambda x: x.name
 latest_job = lambda: max(filter(is_date, jobs_dir.iterdir()), key=basename)
 is_digit = lambda x: ord('0') <= ord(x) <= ord('9')
-basename = lambda x: x.name
 
 def is_date(x):
     x = x.name.split("_")

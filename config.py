@@ -10,7 +10,7 @@ configs = OrderedDict([
         "n_heads": 3,
         "n_routed_experts": 8,
         "max_batch_size": 128,
-        "learning_rate": 1e-6,
+        "learning_rate": 1e-5,
     }), ("6M_moe_impl", {
         "dim": 64,
         "inter_dim": 128,
@@ -19,7 +19,7 @@ configs = OrderedDict([
         "n_heads": 3,
         "n_routed_experts": 8,
         "max_batch_size": 128,
-        "learning_rate": 1e-6,
+        "learning_rate": 1e-5,
         "moe_impl": "distribution",
     }), ("19M", {
         "dim": 128,

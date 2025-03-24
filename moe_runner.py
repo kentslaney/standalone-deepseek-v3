@@ -98,14 +98,10 @@ class Trainer(Transformer):
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        num_params = sum(p.numel() for p in param_dict.values())
         print(
-                f"num decayed parameter tensors: {len(decay_params)}, "
-                f"with {num_decay_params:,} parameters")
-        print(
-                f"num non-decayed parameter tensors: {len(nodecay_params)}, "
-                f"with {num_nodecay_params:,} parameters")
+                f"num tensors: {len(param_dict)}, "
+                f"with {num_params:,} parameters")
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = \
                 'fused' in inspect.signature(torch.optim.AdamW).parameters
@@ -113,7 +109,6 @@ class Trainer(Transformer):
         extra_args = dict(fused=True) if use_fused else dict()
         optimizer = torch.optim.AdamW(
                 optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
@@ -196,7 +191,7 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
     if writing and not (out_dir / loss_filename).is_file():
         with open(out_dir / loss_filename, "a+") as fp:
             fp.write(json.dumps({"train": [], "val": val}) + "\n")
-    for epoch in range(first_epoch, epochs):
+    for epoch in range(first_epoch + 1, epochs + 1):
         losses = []
         print(f"epoch {epoch} / {epochs}")
         pbar = tqdm.tqdm(dataset)
@@ -218,7 +213,7 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
             if (step + 1) % loss_acc_steps == 0:
                 losses.append(loss_acc / loss_acc_steps)
                 loss_acc = 0
-        ckpt(epoch + 1)
+        ckpt(epoch)
         val = validation_loss()
         with open(out_dir / loss_filename, "a") as fp:
             fp.write(json.dumps({"train": losses, "val": val}) + "\n")

@@ -167,7 +167,11 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'epoch': epoch,
-            'config': config,
+            'config': {
+                **config,
+                "max_seq_len": max_seq_len,
+                "max_batch_size": max_batch_size,
+            }
         }
         torch.save(checkpoint, out_dir / f"ckpt-{epoch:04}.pt")
 

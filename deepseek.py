@@ -706,6 +706,7 @@ class Categorical(nn.Module):
         """
         super().__init__()
         self.dim = args.dim
+        self.topk = args.n_activated_experts
         self.score_func = args.score_func
         self.route_scale = args.route_scale
         self.weight = nn.Parameter(torch.empty(args.n_routed_experts, args.dim))
@@ -726,8 +727,11 @@ class Categorical(nn.Module):
             scores = scores.softmax(dim=-1, dtype=torch.float32)
         else:
             scores = scores.sigmoid() / scores.sum(dim=-1, keepdim=True)
-        indices = torch.distributions.categorical.Categorical(scores)\
-                .sample()[..., None]
+        # https://medium.com/@rjnclarke/6b602bae0f2c
+        indices = torch.multinomial(
+                scores, num_samples=self.topk, replacement=False)
+        scores = scores / scores.gather(1, indices).sum(dim=1, keepdim=True) \
+                if self.topk > 1 else scores
         return (scores * self.route_scale).type_as(x), indices
 
 

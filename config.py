@@ -21,6 +21,7 @@ configs = OrderedDict([
         "max_batch_size": 128,
         "learning_rate": 1e-5,
         "moe_impl": "distribution",
+        "n_activated_experts": 1,
     }), ("19M", {
         "dim": 128,
         "inter_dim": 256,

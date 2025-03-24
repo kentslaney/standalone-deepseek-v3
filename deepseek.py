@@ -949,7 +949,7 @@ class Transformer(nn.Module):
                     device=tokens.device).triu_(1)
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
-        #h = self.norm(h)[:, -1]
+        h = self.norm(h)#[:, -1]
         logits = self.head(h)
         if world_size > 1:
             all_logits = [torch.empty_like(logits) for _ in range(world_size)]

@@ -275,8 +275,9 @@ def plotter(args):
             smooth[:cutoff] /= norm
             smooth[cutoff:] /= norm[-1]
             history["train"] = smooth
-        plt.semilogy(history["train"], label=f"series {n} train")
-        plt.semilogy(history["steps"], history["val"], label=f"series {n} val")
+        label = f"series {n}" if len(args.labels) <= n else args.labels[n]
+        plt.semilogy(history["train"], label=f"{label} train")
+        plt.semilogy(history["steps"], history["val"], label=f"{label} val")
     plt.xlabel("step (scaled)")
     plt.ylabel("loss")
     plt.title("wikitext")
@@ -304,6 +305,7 @@ if __name__ == "__main__":
     plot = subparsers.add_parser("plot")
     plot.add_argument("losses", nargs="*", default=latest_flag)
     plot.add_argument("--ema", default=0., type=float)
+    plot.add_argument("--labels", nargs="*", default=())
     plot.set_defaults(caller=plotter)
 
     args = parser.parse_args()

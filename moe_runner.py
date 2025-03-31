@@ -61,19 +61,13 @@ class Trainer(Transformer):
         elif isinstance(module, (ParallelEmbedding, Categorical)):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, tokens, targets=None, mask=None):
+    def forward(self, tokens, targets=None):
         logits = super().forward(tokens)
         if targets is None:
             return logits
-        if mask is not None:
-            logits = logits * mask[..., None]
         loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
-                targets.view(-1), ignore_index=-1)
-        if mask is not None:
-            loss /= torch.sum(mask)
-        else:
-            loss /= tokens.shape[0]
+                targets.view(-1), ignore_index=0)
         return logits, loss
 
     def configure_optimizers(
@@ -152,8 +146,7 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
         for x in valid:
             logits, loss = model(
                     x["input_ids"][:, :-1].to(device_type),
-                    x["input_ids"][:, 1:].to(device_type),
-                    x["attention_mask"][:, 1:].to(device_type))
+                    x["input_ids"][:, 1:].to(device_type))
             total += loss.item()
         return total / len(valid)
 
@@ -198,8 +191,7 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
         for step, x in enumerate(pbar):
             logits, loss = model(
                     x["input_ids"][:, :-1].to(device_type),
-                    x["input_ids"][:, 1:].to(device_type),
-                    x["attention_mask"][:, 1:].to(device_type))
+                    x["input_ids"][:, 1:].to(device_type))
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()

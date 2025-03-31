@@ -67,7 +67,7 @@ class Trainer(Transformer):
             return logits
         loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
-                targets.view(-1), ignore_index=0)
+                targets.reshape(-1), ignore_index=0)
         return logits, loss
 
     def configure_optimizers(
@@ -144,9 +144,8 @@ def run(args, config, resume=None, history=None, device_type="cuda"):
     def validation_loss():
         total = 0
         for x in valid:
-            logits, loss = model(
-                    x["input_ids"][:, :-1].to(device_type),
-                    x["input_ids"][:, 1:].to(device_type))
+            tokens = x["input_ids"].to(device_type)
+            logits, loss = model(tokens[:, :-1], tokens[:, 1:])
             total += loss.item()
         return total / len(valid)
 
